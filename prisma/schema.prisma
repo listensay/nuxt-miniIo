@@ -11,18 +11,215 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// 用户模型
 model User {
-  id    Int     @id @default(autoincrement())
-  email String  @unique
-  name  String?
-  posts Post[]
+  id          String   @id @default(cuid())
+  username    String   @unique
+  email       String   @unique
+  password    String
+  displayName String?
+  avatar      String?
+  isActive    Boolean  @default(true)
+  isAdmin     Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // 关联关系
+  buckets         Bucket[]
+  objects         Object[]
+  bucketPolicies  BucketPolicy[]
+  accessKeys      AccessKey[]
+  uploadSessions  UploadSession[]
+
+  @@map("users")
 }
 
-model Post {
-  id        Int     @id @default(autoincrement())
-  title     String
-  content   String?
-  published Boolean @default(false)
-  author    User    @relation(fields: [authorId], references: [id])
-  authorId  Int
+// 访问密钥模型（类似 MinIO 的 Access Key 和 Secret Key）
+model AccessKey {
+  id          String   @id @default(cuid())
+  accessKey   String   @unique
+  secretKey   String
+  description String?
+  isActive    Boolean  @default(true)
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // 关联关系
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("access_keys")
+}
+
+// 存储桶模型（类似 MinIO 的 Bucket）
+model Bucket {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  displayName String?
+  description String?
+  region      String   @default("us-east-1")
+  versioning  Boolean  @default(false)
+  encryption  Boolean  @default(false)
+  isPublic    Boolean  @default(false)
+  maxSize     BigInt?  // 最大存储大小（字节）
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // 关联关系
+  ownerId String
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  objects        Object[]
+  bucketPolicies BucketPolicy[]
+  tags           BucketTag[]
+
+  @@map("buckets")
+}
+
+// 存储桶标签
+model BucketTag {
+  id       String @id @default(cuid())
+  key      String
+  value    String
+  bucketId String
+  bucket   Bucket @relation(fields: [bucketId], references: [id], onDelete: Cascade)
+
+  @@unique([bucketId, key])
+  @@map("bucket_tags")
+}
+
+// 对象模型（文件）
+model Object {
+  id           String   @id @default(cuid())
+  key          String   // 对象键（路径）
+  originalName String   // 原始文件名
+  mimeType     String
+  size         BigInt
+  etag         String   // 文件的 ETag（通常是 MD5 哈希）
+  storageClass String   @default("STANDARD") // STANDARD, REDUCED_REDUNDANCY, GLACIER 等
+  isDirectory  Boolean  @default(false)
+  metadata     Json?    // 自定义元数据
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // 关联关系
+  bucketId String
+  bucket   Bucket @relation(fields: [bucketId], references: [id], onDelete: Cascade)
+
+  uploaderId String
+  uploader   User   @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
+
+  versions ObjectVersion[]
+  tags     ObjectTag[]
+
+  @@unique([bucketId, key])
+  @@map("objects")
+}
+
+// 对象版本（支持版本控制）
+model ObjectVersion {
+  id           String   @id @default(cuid())
+  versionId    String   @unique
+  size         BigInt
+  etag         String
+  storageClass String   @default("STANDARD")
+  isLatest     Boolean  @default(false)
+  isDeleted    Boolean  @default(false)
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  // 关联关系
+  objectId String
+  object   Object @relation(fields: [objectId], references: [id], onDelete: Cascade)
+
+  @@map("object_versions")
+}
+
+// 对象标签
+model ObjectTag {
+  id       String @id @default(cuid())
+  key      String
+  value    String
+  objectId String
+  object   Object @relation(fields: [objectId], references: [id], onDelete: Cascade)
+
+  @@unique([objectId, key])
+  @@map("object_tags")
+}
+
+// 存储桶策略模型（权限管理）
+model BucketPolicy {
+  id        String   @id @default(cuid())
+  effect    String   // "Allow" 或 "Deny"
+  actions   Json     // 允许的操作数组，如 ["s3:GetObject", "s3:PutObject"]
+  resources Json     // 资源路径数组
+  condition Json?    // 条件表达式
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // 关联关系
+  bucketId String
+  bucket   Bucket @relation(fields: [bucketId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("bucket_policies")
+}
+
+// 上传会话模型（支持分片上传）
+model UploadSession {
+  id           String   @id @default(cuid())
+  uploadId     String   @unique
+  objectKey    String
+  totalSize    BigInt?
+  uploadedSize BigInt   @default(0)
+  partCount    Int      @default(0)
+  isCompleted  Boolean  @default(false)
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // 关联关系
+  bucketId String
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  parts UploadPart[]
+
+  @@map("upload_sessions")
+}
+
+// 上传分片
+model UploadPart {
+  id           String   @id @default(cuid())
+  partNumber   Int
+  size         BigInt
+  etag         String
+  uploadedAt   DateTime @default(now())
+
+  // 关联关系
+  sessionId String
+  session   UploadSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, partNumber])
+  @@map("upload_parts")
+}
+
+// 操作日志模型
+model ActivityLog {
+  id        String   @id @default(cuid())
+  action    String   // 操作类型：CREATE, READ, UPDATE, DELETE
+  resource  String   // 资源类型：BUCKET, OBJECT
+  resourceId String  // 资源ID
+  details   Json?    // 操作详情
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  // 关联关系
+  userId String?
+
+  @@map("activity_logs")
 }
